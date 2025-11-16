@@ -20,7 +20,7 @@ MEDIA_EXTENSIONS = [
     ".avi",
     ".webp",
     ".heic",
-    ".thm",  # Thumbnail files sometimes need metadata
+    ".thm",
     ".tiff",
     ".webm",
     ".3gp",  # Added support for 3GP video format
@@ -59,8 +59,16 @@ def update_file_mtime(media_path, creation_time_epoch):
         os.utime(media_path, (creation_time_epoch, creation_time_epoch))
         print(f"-> Updated filesystem time for {os.path.basename(media_path)}")
 
+    except (
+        OSError
+    ) as e:  # Refined: Catches OS-level errors (permissions, file not found, etc.)
+        print(
+            f"-> Could not update filesystem time for {os.path.basename(media_path)} (OSError): {e}"
+        )
     except Exception as e:
-        print(f"-> Could not update filesystem time: {e}")
+        print(
+            f"-> Could not update filesystem time for {os.path.basename(media_path)} (Generic Error): {e}"
+        )
 
 
 def load_json_metadata_map(takeout_path):
@@ -136,7 +144,6 @@ def process_files_with_map(takeout_path, metadata_map):
 
     try:
         for i, media_path in enumerate(media_files):
-            # Progress logging
             if (i % 500) == 0 and i > 0:
                 print(
                     f"({i}/{media_files_len}) Processing media files...",
@@ -252,7 +259,6 @@ def main():
     )
     print("!!! ENSURE YOU HAVE A BACKUP COPY OF YOUR DATA BEFORE PROCEEDING !!!")
 
-    # We wrap the input() in a try-except to catch Ctrl+C right at the start
     try:
         input("Press Enter to continue or Ctrl+C to cancel...")
     except KeyboardInterrupt:
@@ -263,7 +269,6 @@ def main():
     metadata_map = load_json_metadata_map(TAKEout_DIRECTORY)
 
     # Step 2: Iterate over all media files and use the map to merge data
-    # The process_files_with_map function now handles its own KeyboardInterrupt logging
     process_files_with_map(TAKEout_DIRECTORY, metadata_map)
 
 
