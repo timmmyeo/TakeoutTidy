@@ -3,6 +3,8 @@ import json
 import subprocess
 import glob
 from datetime import datetime
+import argparse  # New import for command-line arguments
+import sys
 
 # --- Helper Functions ---
 
@@ -24,7 +26,8 @@ def run_exiftool(args):
         print(
             "Error: exiftool not found. Make sure it is installed and in your system's PATH."
         )
-        exit(1)
+        # Exit if ExifTool is critical and not found
+        sys.exit(1)
     return True
 
 
@@ -50,8 +53,15 @@ def load_json_metadata_map(takeout_path):
     print(f"Found {json_files_len} potential JSON files...")
 
     for i, json_path in enumerate(json_files):
-        if (i % 500) == 0:
-            print(f"({i}/{json_files_len}) Processing json_path {json_path}")
+        # Progress logging
+        if (i % 500) == 0 and i > 0:
+            print(
+                f"({i}/{json_files_len}) Processing JSON files...",
+                end="\r",
+                file=sys.stdout,
+                flush=True,
+            )
+
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -62,10 +72,12 @@ def load_json_metadata_map(takeout_path):
                     # Store the JSON data and the path to the JSON file itself
                     metadata_map[title] = {"data": data, "json_path": json_path}
         except json.JSONDecodeError:
-            print(f"Could not decode JSON file: {json_path}")
+            print(f"\nCould not decode JSON file: {json_path}")
         except Exception as e:
-            print(f"Error processing JSON file {json_path}: {e}")
+            print(f"\nError processing JSON file {json_path}: {e}")
 
+    # Clear progress line
+    print(" " * 50, end="\r", file=sys.stdout, flush=True)
     print(
         f"Successfully mapped {len(metadata_map)} unique metadata entries by 'title'."
     )
@@ -79,13 +91,23 @@ def process_files_with_map(takeout_path, metadata_map):
     # Iterate over all non-JSON files (images and videos)
     failures = []  # Paths of media that failed to process with exiftool
     untouched = []  # Paths of media that did not have metadata overwritten
-    media_files = glob.glob(os.path.join(takeout_path, "**/*.*"), recursive=True)
-    for i, media_path in enumerate(media_files):
-        if (i % 500) == 0:
-            print(f"({i}/{len(media_files)}) Processing media {media_path}")
+    media_files = [
+        f
+        for f in glob.glob(os.path.join(takeout_path, "**/*.*"), recursive=True)
+        if not f.lower().endswith(".json")
+    ]
 
-        if media_path.lower().endswith(".json"):
-            continue
+    media_files_len = len(media_files)
+    print(f"Found {media_files_len} media files to check...")
+
+    for i, media_path in enumerate(media_files):
+        if (i % 500) == 0 and i > 0:
+            print(
+                f"({i}/{media_files_len}) Processing media files...",
+                end="\r",
+                file=sys.stdout,
+                flush=True,
+            )
 
         filename = os.path.basename(media_path)
 
@@ -98,7 +120,6 @@ def process_files_with_map(takeout_path, metadata_map):
             print(f"\nMatch found for '{filename}'. Merging metadata...")
 
             # Use ExifTool to write metadata from the JSON into the media file
-            # This handles both standard JPEGs and videos (MP4/MOV)
             success = run_exiftool(
                 [
                     "-tagsFromFile",
@@ -111,16 +132,22 @@ def process_files_with_map(takeout_path, metadata_map):
                 failures.append(media_path)
 
             # Update the file system modification time as well
-            creation_time_epoch = int(json_data["creationTime"]["timestamp"])
-            update_file_mtime(media_path, creation_time_epoch)
-            count_merged += 1
+            try:
+                creation_time_epoch = int(json_data["creationTime"]["timestamp"])
+                update_file_mtime(media_path, creation_time_epoch)
+                count_merged += 1
+            except (KeyError, ValueError, TypeError):
+                print(
+                    f"-> WARNING: JSON data missing/invalid creationTime for {filename}. Skipping utime update."
+                )
+                failures.append(media_path)
 
         # This else block is for files where the metadata was probably already embedded
-        # in the original upload and no *edits* were made in Google Photos.
-        # It's usually fine to skip these.
         else:
-            print(f"No specific JSON metadata edits found for: {filename}")
             untouched.append(media_path)
+
+    # Clear progress line
+    print(" " * 50, end="\r", file=sys.stdout, flush=True)
 
     ## 📝 Logging Failures
     if failures:
@@ -147,20 +174,40 @@ def process_files_with_map(takeout_path, metadata_map):
 
 # --- Main execution ---
 
-# !!! IMPORTANT: CHANGE THIS PATH to the root of your extracted Google Takeout folder !!!
-TAKEout_DIRECTORY = "/mnt/e/pictures/google_photos/Takeout/Google Photos"
 
-# Safety check
-if not os.path.isdir(TAKEout_DIRECTORY):
-    print(f"Directory not found: {TAKEout_DIRECTORY}")
-    print(
-        "Please update the 'TAKEout_DIRECTORY' variable in the script to the root of your extracted Google Photos folder."
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Merges metadata from Google Takeout JSON files into the corresponding media files (images/videos). "
+            "Requires ExifTool to be installed and accessible in the system's PATH."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
-else:
+
+    parser.add_argument(
+        "takeout_path",
+        type=str,
+        help=(
+            "The full path to the root of the extracted Google Photos Takeout directory.\n"
+            "Example for Windows/WSL: /mnt/e/pictures/google_photos/Takeout/Google Photos"
+        ),
+    )
+
+    args = parser.parse_args()
+    TAKEout_DIRECTORY = args.takeout_path
+
+    # Safety check
+    if not os.path.isdir(TAKEout_DIRECTORY):
+        print(f"Directory not found: {TAKEout_DIRECTORY}")
+        sys.exit(1)
+
     print("--- Starting Google Photos Metadata Merge ---")
+    print(f"Target Directory: {TAKEout_DIRECTORY}")
     print(
-        "!!! WARNING: This script modifies files in place. ENSURE YOU HAVE A BACKUP COPY OF YOUR DATA !!!"
+        "\n!!! WARNING: This script uses ExifTool to modify files in place ('-overwrite_original')."
     )
+    print("!!! ENSURE YOU HAVE A BACKUP COPY OF YOUR DATA BEFORE PROCEEDING !!!")
+
     input("Press Enter to continue or Ctrl+C to cancel...")
 
     # Step 1: Build the map from all JSON files
@@ -168,3 +215,7 @@ else:
 
     # Step 2: Iterate over all media files and use the map to merge data
     process_files_with_map(TAKEout_DIRECTORY, metadata_map)
+
+
+if __name__ == "__main__":
+    main()
