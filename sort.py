@@ -3,8 +3,29 @@ import json
 import subprocess
 import glob
 from datetime import datetime
-import argparse  # New import for command-line arguments
+import argparse
 import sys
+
+# --- Configuration ---
+
+# List of file extensions that should be processed as media files.
+# This prevents log files (.txt) and other non-media files from being targeted.
+MEDIA_EXTENSIONS = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webp",
+    ".heic",
+    ".thm",  # Thumbnail files sometimes need metadata
+    ".tiff",
+    ".webm",
+    ".3gp"
+]
+
 
 # --- Helper Functions ---
 
@@ -45,7 +66,9 @@ def update_file_mtime(media_path, creation_time_epoch):
 def load_json_metadata_map(takeout_path):
     """
     Reads all JSON files into an in-memory map keyed by the 'title' field.
-    This handles supplemental JSON files robustly.
+    Includes validation to skip non-media metadata JSON files.
+
+    Returns a dictionary: {filename: {"data": json_object, "json_path": path}}
     """
     metadata_map = {}
     json_files = glob.glob(os.path.join(takeout_path, "**/*.json"), recursive=True)
@@ -66,11 +89,18 @@ def load_json_metadata_map(takeout_path):
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-                # The 'title' field in the JSON is the original filename Google uses
+                # --- Robustness Check: Ensure this is a media metadata JSON ---
                 title = data.get("title")
-                if title:
+                has_creation_time = data.get("creationTime")
+
+                # Check for two essential keys to filter out non-media files (e.g., album titles, general metadata)
+                if title and has_creation_time:
                     # Store the JSON data and the path to the JSON file itself
                     metadata_map[title] = {"data": data, "json_path": json_path}
+                else:
+                    # Skip files like 'metadata.json' or 'user-generated-memory-titles.json'
+                    pass
+
         except json.JSONDecodeError:
             print(f"\nCould not decode JSON file: {json_path}")
         except Exception as e:
@@ -79,7 +109,7 @@ def load_json_metadata_map(takeout_path):
     # Clear progress line
     print(" " * 50, end="\r", file=sys.stdout, flush=True)
     print(
-        f"Successfully mapped {len(metadata_map)} unique metadata entries by 'title'."
+        f"Successfully mapped {len(metadata_map)} unique metadata entries by 'title' and structure."
     )
     return metadata_map
 
@@ -88,13 +118,14 @@ def process_files_with_map(takeout_path, metadata_map):
     """Iterates over all media files and attempts to match them using the metadata map."""
     count_merged = 0
 
-    # Iterate over all non-JSON files (images and videos)
     failures = []  # Paths of media that failed to process with exiftool
     untouched = []  # Paths of media that did not have metadata overwritten
+
+    # Filter media files based on the defined extensions
     media_files = [
         f
         for f in glob.glob(os.path.join(takeout_path, "**/*.*"), recursive=True)
-        if not f.lower().endswith(".json")
+        if os.path.splitext(f.lower())[1] in MEDIA_EXTENSIONS
     ]
 
     media_files_len = len(media_files)
