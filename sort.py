@@ -23,7 +23,7 @@ MEDIA_EXTENSIONS = [
     ".thm",  # Thumbnail files sometimes need metadata
     ".tiff",
     ".webm",
-    ".3gp"
+    ".3gp",  # Added support for 3GP video format
 ]
 
 
@@ -115,11 +115,14 @@ def load_json_metadata_map(takeout_path):
 
 
 def process_files_with_map(takeout_path, metadata_map):
-    """Iterates over all media files and attempts to match them using the metadata map."""
+    """
+    Iterates over all media files and attempts to match them using the metadata map.
+    Includes clean exit handling for KeyboardInterrupt.
+    """
     count_merged = 0
-
     failures = []  # Paths of media that failed to process with exiftool
     untouched = []  # Paths of media that did not have metadata overwritten
+    interrupted = False
 
     # Filter media files based on the defined extensions
     media_files = [
@@ -131,76 +134,86 @@ def process_files_with_map(takeout_path, metadata_map):
     media_files_len = len(media_files)
     print(f"Found {media_files_len} media files to check...")
 
-    for i, media_path in enumerate(media_files):
-        if (i % 500) == 0 and i > 0:
-            print(
-                f"({i}/{media_files_len}) Processing media files...",
-                end="\r",
-                file=sys.stdout,
-                flush=True,
-            )
-
-        filename = os.path.basename(media_path)
-
-        # Check if this filename is a key in our metadata map
-        if filename in metadata_map:
-            match = metadata_map[filename]
-            json_path = match["json_path"]
-            json_data = match["data"]
-
-            print(f"\nMatch found for '{filename}'. Merging metadata...")
-
-            # Use ExifTool to write metadata from the JSON into the media file
-            success = run_exiftool(
-                [
-                    "-tagsFromFile",
-                    json_path,
-                    "-overwrite_original",  # WARNING: Modifies the file in place
-                    media_path,
-                ]
-            )
-            if not success:
-                failures.append(media_path)
-
-            # Update the file system modification time as well
-            try:
-                creation_time_epoch = int(json_data["creationTime"]["timestamp"])
-                update_file_mtime(media_path, creation_time_epoch)
-                count_merged += 1
-            except (KeyError, ValueError, TypeError):
+    try:
+        for i, media_path in enumerate(media_files):
+            # Progress logging
+            if (i % 500) == 0 and i > 0:
                 print(
-                    f"-> WARNING: JSON data missing/invalid creationTime for {filename}. Skipping utime update."
+                    f"({i}/{media_files_len}) Processing media files...",
+                    end="\r",
+                    file=sys.stdout,
+                    flush=True,
                 )
-                failures.append(media_path)
 
-        # This else block is for files where the metadata was probably already embedded
-        else:
-            untouched.append(media_path)
+            filename = os.path.basename(media_path)
 
-    # Clear progress line
-    print(" " * 50, end="\r", file=sys.stdout, flush=True)
+            # Check if this filename is a key in our metadata map
+            if filename in metadata_map:
+                match = metadata_map[filename]
+                json_path = match["json_path"]
+                json_data = match["data"]
 
-    ## 📝 Logging Failures
-    if failures:
-        failure_log_path = "./exiftool_merge_failures.txt"
-        with open(failure_log_path, "w", encoding="utf-8") as f:
-            for path in failures:
-                f.write(path + "\n")
+                print(f"\nMatch found for '{filename}'. Merging metadata...")
+
+                # Use ExifTool to write metadata from the JSON into the media file
+                success = run_exiftool(
+                    [
+                        "-tagsFromFile",
+                        json_path,
+                        "-overwrite_original",  # WARNING: Modifies the file in place
+                        media_path,
+                    ]
+                )
+                if not success:
+                    failures.append(media_path)
+
+                # Update the file system modification time as well
+                try:
+                    creation_time_epoch = int(json_data["creationTime"]["timestamp"])
+                    update_file_mtime(media_path, creation_time_epoch)
+                    count_merged += 1
+                except (KeyError, ValueError, TypeError):
+                    print(
+                        f"-> WARNING: JSON data missing/invalid creationTime for {filename}. Skipping utime update."
+                    )
+                    failures.append(media_path)
+
+            # This else block is for files where the metadata was probably already embedded
+            else:
+                untouched.append(media_path)
+
+    except KeyboardInterrupt:
+        interrupted = True
         print(
-            f"**LOGGED:** {len(failures)} files failed the ExifTool merge. See **{failure_log_path}** for paths."
+            "\n\nProcessing interrupted by user (Ctrl+C). Cleaning up and logging partial results..."
         )
 
-    ## 📝 Logging Untouched Files
-    if untouched:
-        untouched_log_path = "./metadata_untouched_files.txt"
-        with open(untouched_log_path, "w", encoding="utf-8") as f:
-            for path in untouched:
-                f.write(path + "\n")
-        print(
-            f"**LOGGED:** {len(untouched)} files were skipped (no JSON found). See **{untouched_log_path}** for paths."
-        )
+    finally:
+        # Clear progress line
+        print(" " * 50, end="\r", file=sys.stdout, flush=True)
 
-    print(f"\nProcessing complete. Merged metadata for {count_merged} files.")
+        ## 📝 Logging Failures
+        if failures:
+            failure_log_path = "./exiftool_merge_failures.txt"
+            with open(failure_log_path, "w", encoding="utf-8") as f:
+                for path in failures:
+                    f.write(path + "\n")
+            print(
+                f"**LOGGED:** {len(failures)} files failed the ExifTool merge. See **{failure_log_path}** for paths."
+            )
+
+        ## 📝 Logging Untouched Files
+        if untouched:
+            untouched_log_path = "./metadata_untouched_files.txt"
+            with open(untouched_log_path, "w", encoding="utf-8") as f:
+                for path in untouched:
+                    f.write(path + "\n")
+            print(
+                f"**LOGGED:** {len(untouched)} files were skipped (no JSON found). See **{untouched_log_path}** for paths."
+            )
+
+        status = "Interrupted" if interrupted else "Complete"
+        print(f"\nProcessing {status}. Merged metadata for {count_merged} files.")
 
 
 # --- Main execution ---
@@ -239,14 +252,26 @@ def main():
     )
     print("!!! ENSURE YOU HAVE A BACKUP COPY OF YOUR DATA BEFORE PROCEEDING !!!")
 
-    input("Press Enter to continue or Ctrl+C to cancel...")
+    # We wrap the input() in a try-except to catch Ctrl+C right at the start
+    try:
+        input("Press Enter to continue or Ctrl+C to cancel...")
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user.")
+        sys.exit(0)
 
     # Step 1: Build the map from all JSON files
     metadata_map = load_json_metadata_map(TAKEout_DIRECTORY)
 
     # Step 2: Iterate over all media files and use the map to merge data
+    # The process_files_with_map function now handles its own KeyboardInterrupt logging
     process_files_with_map(TAKEout_DIRECTORY, metadata_map)
 
 
 if __name__ == "__main__":
-    main()
+    # Wrap main in a try-except to catch any interrupts that bubble up from other places
+    try:
+        main()
+    except KeyboardInterrupt:
+        # If interrupted outside of the dedicated block (e.g., in load_json_metadata_map), just exit cleanly
+        print("\nProgram exit due to user interruption (Ctrl+C).")
+        sys.exit(0)
